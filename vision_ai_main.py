@@ -245,7 +245,11 @@ def run_pipeline(cam_index=0, on_decision_callback=None):
 
         # 화면 좌측 상단 상태 오버레이
         status_color = (0, 255, 0) if current_status == "PASS" else (0, 0, 255) if current_status == "FAIL" else (0, 255, 255)
-        cv2.putText(display_img, f"Target: {expected_product} (Ignored)", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+        
+         # 💡 [UI 수정] 고정된 expected_product 대신, 트리거로 확정된 current_part_name을 출력합니다.
+        display_target = current_part_name if current_part_name else "Waiting for Trigger..."
+        cv2.putText(display_img, f"Detected: {display_target}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
         cv2.putText(display_img, f"Status: {current_status}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
 
         # API 서버 스트리밍용으로 복사본 갱신
