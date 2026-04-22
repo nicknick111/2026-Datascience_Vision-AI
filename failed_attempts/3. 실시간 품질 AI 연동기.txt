@@ -1,0 +1,86 @@
+import cv2
+import numpy as np
+from ultralytics import YOLO
+
+def run_quality_control():
+    """
+    [3D 다각도 인식 실패 예방 3단계 및 품질관리 목표 달성]
+    학습이 완료된 모델(best.pt)을 로드하여 PC에 연결된 카메라(또는 테스트 영상)와 연동합니다.
+    제품을 식별하고, 실시간으로 PASS/FAIL을 화면에 띄웁니다.
+    """
+    
+    # 1. 이전 단계에서 생성된 '최고 성능의 가중치(best.pt)' 모델 로드
+    # (주의: 경로를 본인의 PC에 맞게 수정하세요)
+    model = YOLO("Drone_QC_Project/robust_3d_model/weights/best.pt")
+    
+    # 2. 카메라 연결 (0은 기본 웹캠, 1, 2는 추가 USB 카메라)
+    # 테스트를 위해 영상 파일 경로("20260323_Right_wing.mp4")를 넣어도 됩니다.
+    cap = cv2.VideoCapture(0) 
+    
+    if not cap.isOpened():
+        print("❌ 카메라를 찾을 수 없습니다. USB 연결을 확인하세요.")
+        return
+
+    print("🟢 실시간 Vision AI 품질검사 가동 (종료: 'q' 키 누름)")
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("영상이 종료되었거나 카메라 연결이 끊겼습니다.")
+            break
+
+        # 3. AI 모델 추론 (실시간 판정)
+        # conf=0.75 : 3D 각도 변화 속에서도 AI가 75% 이상 확신할 때만 인식 (오작동 방지)
+        # verbose=False : 터미널 창에 로그가 너무 많이 뜨는 것 방지
+        results = model.predict(source=frame, conf=0.75, verbose=False)
+        
+        # 4. 결과 시각화 (AI가 그린 Bounding Box를 이미지에 입힘)
+        annotated_frame = results[0].plot()
+        
+        # 5. 제품 식별 및 품질 판정 로직
+        status_text = "STATUS: NO PART DETECTED"
+        status_color = (150, 150, 150) # 회색 (대기 상태)
+
+        # 화면에 잡힌 객체가 1개 이상이라면
+        if len(results[0].boxes) > 0:
+            # 감지된 객체들의 신뢰도(Confidence)와 클래스 ID 번호를 가져옵니다.
+            confidences = results[0].boxes.conf.cpu().numpy()
+            class_ids = results[0].boxes.cls.cpu().numpy()
+            
+            # 가장 신뢰도가 높은(가장 확실한) 객체 하나를 고릅니다.
+            best_idx = np.argmax(confidences)
+            class_id = int(class_ids[best_idx])
+            best_conf = confidences[best_idx]
+            
+            # 클래스 번호를 이름(Right_wing, ISR_System 등)으로 변환합니다.
+            part_name = model.names[class_id]
+            
+            # [품질관리 판정 로직] 
+            # 예시: 인식된 부품의 신뢰도가 85% 이상이면 정상 조립품(PASS)으로 판정합니다.
+            if best_conf >= 0.85:
+                status_text = f"PASS: {part_name} ({best_conf*100:.1f}%)"
+                status_color = (0, 255, 0) # 초록색
+                
+                # TODO: 이곳에 requests 라이브러리를 사용해 서버 DB로 정상(PASS) 기록을 전송하는 코드를 넣을 수 있습니다.
+            else:
+                status_text = f"WARNING: {part_name} (Low Conf: {best_conf*100:.1f}%)"
+                status_color = (0, 165, 255) # 주황색 (재검사 필요)
+
+        # 6. 화면 상단에 검은색 HUD 박스를 그리고 상태 텍스트 출력
+        cv2.rectangle(annotated_frame, (0, 0), (800, 60), (0, 0, 0), -1)
+        cv2.putText(annotated_frame, status_text, (20, 40), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, status_color, 3)
+
+        # 7. 화면에 출력
+        cv2.imshow("Drone Vision AI Quality Control", annotated_frame)
+
+        # 'q' 키를 누르면 루프 종료
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    # 메모리 해제
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    run_quality_control()

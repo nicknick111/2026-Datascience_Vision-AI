@@ -1,0 +1,245 @@
+import os
+import cv2
+import time
+import threading
+import datetime
+import numpy as np
+import requests
+from queue import Queue
+from ultralytics import YOLO
+from fastapi import FastAPI
+import uvicorn
+
+# 불필요한 OpenCV 터미널 경고 메시지 숨김
+os.environ["OPENCV_LOG_LEVEL"] = "SILENT"
+
+# ==========================================
+# [설정] 시스템 전역 변수 및 상수
+# ==========================================
+# 식별 대상 클래스 (이름이 정확히 일치해야 PASS 판정)
+TARGET_CLASSES = ["inspection_C4_Bomb", "inspection_Communication", "inspection_Supply"]
+
+# 우리 API 서버 주소 (검사 결과 전송)
+API_ENDPOINT = "http://192.168.3.21:8000/inspection"
+
+# FastAPI 앱 (PLC에서 트리거 신호 받기 위한 서버)
+app = FastAPI()
+
+# 트리거 플래그 (PLC D300 신호가 왔을 때만 True로 바뀜)
+trigger_flag = False
+
+# ==========================================
+# [수정 1] /trigger 엔드포인트 추가
+# 이유: PLC D300 = 1 신호가 왔을 때만 AI 판정 후 API 서버로 전송하기 위해
+# plc_monitor_all.py 에서 이 주소로 POST 요청을 보냄
+# ==========================================
+@app.post("/trigger")
+def trigger_vision():
+    global trigger_flag
+    trigger_flag = True
+    print("[AI] 촬영 신호 수신! 다음 판정 결과를 전송합니다.")
+    return {"message": "촬영 신호 수신 완료"}
+
+
+# ==========================================
+# [모듈 1] 영상 획득 전담 스레드 (CameraStream)
+# 역할: AI 추론 시간과 상관없이 카메라의 최신 프레임을 끊임없이 확보하여 FPS 하락 방지
+# ==========================================
+class CameraStream:
+    def __init__(self, src=0):
+        self.cap = cv2.VideoCapture(src, cv2.CAP_DSHOW)
+        
+        # RPC-20F 웹캠 하드웨어 최적화 설정
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)   # 오토포커스 끄기 (검수 거리가 일정하므로)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # 버퍼를 1로 설정하여 최신 화면만 가져옴
+        
+        self.ret, self.frame = self.cap.read()
+        self.stopped = False
+
+    def start(self):
+        threading.Thread(target=self.update, daemon=True).start()
+        return self
+
+    def update(self):
+        while not self.stopped:
+            self.ret, self.frame = self.cap.read()
+
+    def read(self):
+        return self.frame
+
+    def stop(self):
+        self.stopped = True
+        self.cap.release()
+
+
+# ==========================================
+# [모듈 2] 데이터 전송 전담 스레드 (ApiUploader)
+# 역할: API 서버가 느리거나 끊겨도 검사기 화면이 멈추지 않도록 비동기 전송
+# ==========================================
+class ApiUploader:
+    def __init__(self, url):
+        self.url = url
+        self.queue = Queue(maxsize=30)
+        threading.Thread(target=self._worker, daemon=True).start()
+
+    def _worker(self):
+        while True:
+            payload = self.queue.get()
+            try:
+                response = requests.post(self.url, json=payload, timeout=1.0)
+                print(f"🚀 [API 전송 완료] 판정: {payload['result']} (상태코드: {response.status_code})")
+            except Exception as e:
+                print(f"❌ [API 전송 실패] 서버 확인 필요: {e}")
+            self.queue.task_done()
+
+    def send(self, data):
+        if not self.queue.full():
+            self.queue.put(data)
+
+
+# ==========================================
+# [모듈 3] 전처리 및 AI 판정 두뇌 (QualityInspector)
+# 역할: 조명 변화를 소프트웨어로 방어하고 OpenVINO로 초고속 추론 수행
+# ==========================================
+class QualityInspector:
+    def __init__(self, model_path):
+        print("⏳ OpenVINO AI 모델을 불러오는 중... (CPU 가속)")
+        self.model = YOLO(model_path, task='detect')
+        self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
+    def adjust_gamma(self, image, gamma=1.0):
+        """비선형 밝기 조절 (화이트홀 억제에 효과적)"""
+        invGamma = 1.0 / gamma
+        table = np.array([((i / 255.0) ** invGamma) * 255 for i in np.arange(0, 256)]).astype("uint8")
+        return cv2.LUT(image, table)
+
+    def preprocess(self, frame):
+        """환경 적응형 이미지 전처리 파이프라인"""
+        resized = cv2.resize(frame, (640, 480))
+        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+        
+        mean_bright = np.mean(gray)
+        if mean_bright > 160:
+            gamma = 0.7
+        elif mean_bright < 80:
+            gamma = 1.4
+        else:
+            gamma = 1.0
+            
+        gamma_corrected = self.adjust_gamma(resized, gamma=gamma)
+        denoised = cv2.bilateralFilter(gamma_corrected, d=9, sigmaColor=75, sigmaSpace=75)
+        
+        lab = cv2.cvtColor(denoised, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        l = self.clahe.apply(l)
+        final_frame = cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2BGR)
+        
+        return final_frame, gamma
+
+    def inspect(self, frame):
+        """전처리 적용 후 YOLO 추론 및 최종 PASS/FAIL 판정"""
+        processed_frame, applied_gamma = self.preprocess(frame)
+        results = self.model.predict(source=processed_frame, conf=0.25, iou=0.45, verbose=False)
+        
+        status = "FAIL"
+        best_conf = 0.0
+        part_name = "Unknown"
+        
+        if len(results[0].boxes) > 0:
+            confidences = results[0].boxes.conf.cpu().numpy()
+            class_ids = results[0].boxes.cls.cpu().numpy()
+            best_idx = np.argmax(confidences)
+            best_conf = float(confidences[best_idx])
+            part_name = self.model.names[int(class_ids[best_idx])]
+            
+            # 합격 기준: 우리가 찾는 부품이고 확신도 80% 이상
+            if part_name in TARGET_CLASSES and best_conf >= 0.80:
+                status = "PASS"
+
+        return results[0], processed_frame, status, part_name, best_conf, applied_gamma
+
+
+# ==========================================
+# [모듈 4] 메인 프로그램 루프
+# ==========================================
+def main():
+    global trigger_flag
+
+    cam_stream = CameraStream(src=0).start()
+    
+    model_path = "E:/Robot_Team_Project/Python_Files(AI Programming)/TestSet02/best_openvino_model/"
+    inspector = QualityInspector(model_path)
+
+    # ==========================================
+    # [수정 2] ApiUploader URL을 우리 서버로 변경
+    # 이유: 기존 더미 URL에서 실제 API 서버 주소로 변경
+    # ==========================================
+    uploader = ApiUploader(API_ENDPOINT)
+    
+    window_name = "Real-time AI Quality Control"
+    cv2.namedWindow(window_name)
+    
+    prev_time = time.time()
+    print("🚀 실시간 AI 품질 검사 시스템이 정상 가동되었습니다.")
+
+    while True:
+        frame = cam_stream.read()
+        if frame is None:
+            continue
+            
+        ai_result, display_frame, status, part_name, conf, gamma = inspector.inspect(frame)
+        
+        # ==========================================
+        # [수정 3] trigger_flag 조건 추가 + payload 형식 변경
+        # 이유1: PLC D300 신호가 왔을 때만 전송 (계속 전송 방지)
+        # 이유2: payload 형식을 우리 InspectionData 형식에 맞게 변경
+        #        기존: product_type, decision, accuracy
+        #        변경: product_id, result(정상/불량), timestamp, camera_id
+        # ==========================================
+        if trigger_flag and part_name != "Unknown":
+            trigger_flag = False  # 트리거 초기화 (한 번만 전송)
+            payload = {
+                "product_id": f"DRONE-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}",
+                "result": "정상" if status == "PASS" else "불량",
+                "timestamp": datetime.datetime.now().isoformat(),
+                "camera_id": "RPC-20F"
+            }
+            uploader.send(payload)
+            
+        # FPS 계산
+        curr_time = time.time()
+        fps = 1 / (curr_time - prev_time) if prev_time > 0 else 0
+        prev_time = curr_time
+        
+        # 화면 UI 그리기
+        annotated_frame = ai_result.plot(img=display_frame)
+        color = (0, 255, 0) if status == "PASS" else (0, 0, 255)
+        
+        cv2.putText(annotated_frame, f"STATUS: {status}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+        cv2.putText(annotated_frame, f"Product: {part_name} ({conf*100:.1f}%)", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(annotated_frame, f"FPS: {fps:.1f} | Auto-Gamma: {gamma}", (20, 450), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
+        cv2.putText(annotated_frame, f"Trigger: {'WAIT' if not trigger_flag else 'READY'}", (20, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+        cv2.imshow(window_name, annotated_frame)
+        
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cam_stream.stop()
+    cv2.destroyAllWindows()
+    print("시스템이 안전하게 종료되었습니다.")
+
+
+# ==========================================
+# [수정 4] 실행 방식 변경
+# 이유: FastAPI 서버(/trigger 엔드포인트)와 카메라 루프를 동시에 실행하기 위해
+#       카메라 루프는 별도 스레드로 실행하고 uvicorn으로 FastAPI 서버 가동
+# ==========================================
+if __name__ == "__main__":
+    # 카메라 루프를 별도 스레드로 실행
+    t = threading.Thread(target=main, daemon=True)
+    t.start()
+    # FastAPI 서버 실행 (PLC 트리거 신호 수신)
+    uvicorn.run(app, host="0.0.0.0", port=8001)

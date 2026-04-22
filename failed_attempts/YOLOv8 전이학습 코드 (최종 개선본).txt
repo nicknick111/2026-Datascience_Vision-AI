@@ -1,0 +1,55 @@
+from ultralytics import YOLO
+
+# 1. 경로 설정
+# 변환 완료된 데이터셋의 정보를 담고 있는 data.yaml 파일의 절대 경로입니다.
+YAML_PATH = r"E:\Robot_Team_Project\Python_Files(AI Programming)\TestSet02\dataset\data.yaml"
+
+# 학습이 끝난 후, AI의 "뇌(가중치 파일)"와 "성능 그래프"가 저장될 폴더 경로입니다.
+PROJECT_DIR = r"E:\Robot_Team_Project\Python_Files(AI Programming)\TestSet02\runs_detect"
+
+def main():
+    print("=" * 60)
+    print("🚀 YOLOv8n (Bounding Box) 전이학습을 시작합니다 (최종 최적화) 🚀")
+    print("=" * 60)
+    
+    # 2. 모델 로드 (전이학습의 시작)
+    model = YOLO("yolov8n.pt")
+
+    # 3. 모델 학습 (Fine-Tuning)
+    results = model.train(
+        data=YAML_PATH,
+        project=PROJECT_DIR,
+        name="drone_parts_detect_v3", # 3차 모델 폴더명
+        epochs=120,          
+        imgsz=640,           
+        
+        # [시스템 옵션: 속도 최적화]
+        # GTX 1050 활용을 시도합니다. 만약 'Out of Memory' 에러가 뜬다면,
+        # device='cpu'로 되돌리고 batch=8 로 다시 수정해서 돌려주세요.
+        device='0',          # 'cpu' 대신 '0' (첫 번째 GPU) 사용
+        batch=4,             # VRAM 2GB의 한계를 고려해 한 번에 4장씩만 학습
+        workers=2,           
+        patience=30,
+        
+        # [학습 알고리즘 최적화]
+        optimizer='auto',    
+        cos_lr=True,         # [추가] 코사인 학습률 감소 기법. 후반부로 갈수록 학습 보폭을 부드럽게 줄여 정밀하게 안착합니다.
+        
+        # [데이터 증강(Augmentation): 조명/환경 변화 극복 및 과적합 방지]
+        hsv_v=0.7,           # [수정] 0.4 -> 0.7: 밝기 변화의 폭을 넓혀, 어두운 조명과 밝은 조명 모두에 대한 면역력을 키웁니다.
+        hsv_s=0.5,           # [추가] 채도 변화 폭 추가. 빛 반사로 인해 색이 달라보이는 현상에 대비합니다.
+        mosaic=0.5,          
+        close_mosaic=15,     # [추가] 마지막 15 에폭은 모자이크를 끄고 온전한 원본 이미지만 보여주어 최종 정리를 돕습니다.
+        fliplr=0.0,          # ⭐ 부품 꼬리를 머리로 착각하지 않게 하는 필수 옵션 (유지)
+        erasing=0.4,         
+        dropout=0.15         # [추가] 작은 데이터셋(630장)의 단순 암기를 막고 일반화 능력을 키우는 드롭아웃 옵션
+    )
+
+    print("\n" + "=" * 60)
+    print("🎉 최종 학습이 성공적으로 완료되었습니다! 🎉")
+    print(f"가장 똑똑하게 학습된 최종 가중치 파일(best.pt) 위치:")
+    print(f" -> {PROJECT_DIR}\\drone_parts_detect_v3\\weights\\best.pt")
+    print("=" * 60)
+
+if __name__ == "__main__":
+    main()

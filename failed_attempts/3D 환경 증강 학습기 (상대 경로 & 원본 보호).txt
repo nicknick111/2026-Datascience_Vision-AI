@@ -1,0 +1,81 @@
+import os
+import shutil
+import yaml
+from ultralytics import YOLO
+
+def setup_dataset_and_train():
+    # [수정됨] PC마다 다른 절대 경로 대신, 현재 실행 중인 폴더 기준의 상대 경로 사용
+    current_working_dir = os.getcwd()
+    base_dir = os.path.join(current_working_dir, "dataset")
+    
+    raw_images_dir = os.path.join(base_dir, "raw_images")
+    labels_dir = os.path.join(base_dir, "labels")
+    
+    images_train_dir = os.path.join(base_dir, "images", "train")
+    labels_train_dir = os.path.join(base_dir, "labels", "train")
+    
+    print("📂 데이터셋 폴더 구조를 YOLO 표준 형식에 맞게 복사하여 정리합니다...")
+    
+    # [이미지 복사 작업 - 원본 보호]
+    if os.path.exists(raw_images_dir):
+        os.makedirs(images_train_dir, exist_ok=True)
+        for f in os.listdir(raw_images_dir):
+            file_path = os.path.join(raw_images_dir, f)
+            if os.path.isfile(file_path):
+                # move 대신 copy2를 사용하여 메타데이터까지 안전하게 복사
+                shutil.copy2(file_path, os.path.join(images_train_dir, f))
+            
+    # [라벨 복사 작업 - 원본 보호]
+    if os.path.exists(labels_dir):
+        txt_files = [f for f in os.listdir(labels_dir) if os.path.isfile(os.path.join(labels_dir, f))]
+        if txt_files:
+            os.makedirs(labels_train_dir, exist_ok=True)
+            for f in txt_files:
+                shutil.copy2(os.path.join(labels_dir, f), os.path.join(labels_train_dir, f))
+
+    # 클래스 및 yaml 생성
+    classes = ["Fuselage_3_1", "ISR_System", "Right_wing"]
+    yaml_path = os.path.join(base_dir, "data.yaml")
+    
+    yaml_data = {
+        "path": base_dir,
+        "train": "images/train",
+        "val": "images/train",
+        "nc": len(classes),
+        "names": classes
+    }
+    
+    with open(yaml_path, 'w', encoding='utf-8') as f:
+        yaml.dump(yaml_data, f, allow_unicode=True, sort_keys=False)
+        
+    print(f"✅ 설정 파일 생성 완료: {yaml_path}")
+    
+    # [수정됨] yolo26 오타 수정 및 최적화된 YOLOv8-nano 로드
+    model = YOLO("yolov8n.pt") 
+    print("\n🚀 3D 다각도 인식을 위한 증강(Augmentation) 학습을 시작합니다...")
+
+    results = model.train(
+        data=yaml_path,
+        epochs=150,
+        imgsz=640,              
+        batch=16,
+        project="Drone_QC_Project",
+        name="robust_3d_model",
+        # 3D 다각도 파라미터 유지
+        degrees=45.0,
+        translate=0.2,
+        scale=0.5,
+        shear=15.0,
+        perspective=0.001,
+        flipud=0.5,
+        fliplr=0.5,
+        mosaic=1.0,
+        hsv_h=0.015,
+        hsv_s=0.7,
+        hsv_v=0.4
+    )
+    
+    print("\n✅ 학습이 완료되었습니다! best.pt 파일을 확인하세요.")
+
+if __name__ == "__main__":
+    setup_dataset_and_train()

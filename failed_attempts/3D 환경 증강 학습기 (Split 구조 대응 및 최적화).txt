@@ -1,0 +1,72 @@
+import os
+import yaml
+from ultralytics import YOLO
+
+def setup_dataset_and_train():
+    """
+    [2단계: YOLO 모델 학습]
+    1단계에서 70:20:10으로 분할되고 라벨링까지 마친 데이터셋을 바탕으로
+    3D 환경(회전, 원근 왜곡, 조명 변화)을 시뮬레이션하며 AI를 학습시킵니다.
+    """
+    current_working_dir = os.getcwd()
+    base_dir = os.path.join(current_working_dir, "dataset")
+    
+    # 학습을 시작하기 전, 사용자가 라벨링을 제대로 마쳤는지 최소한의 안전 검사를 수행합니다.
+    labels_train_dir = os.path.join(base_dir, "labels", "train")
+    if not os.path.exists(labels_train_dir) or len(os.listdir(labels_train_dir)) == 0:
+        print("❌ 오류: 'dataset/labels/train' 폴더에 라벨링 파일(.txt)이 없습니다.")
+        print("💡 힌트: AnyLabeling 등에서 라벨링을 완료한 후 다시 실행해 주세요.")
+        return
+
+    print("📂 분할 완료된 데이터셋 구조를 확인했습니다. data.yaml을 생성합니다...")
+
+    # 클래스 정의 (AnyLabeling 작업 순서와 반드시 일치해야 함)
+    classes = ["Fuselage_3_1", "ISR_System", "Right_wing", "communication", "Supply", "C4_Bomb"]
+    yaml_path = os.path.join(base_dir, "data.yaml")
+    
+    # [수정됨] 1단계 Split 로직에 맞추어 train, val, test 경로를 각각 매핑합니다.
+    yaml_data = {
+        "path": base_dir,
+        "train": "images/train",  # 70% 학습용 교과서
+        "val": "images/val",      # 20% 검증용 모의고사 (과적합 방지)
+        "test": "images/test",    # 10% 최종 테스트용
+        "nc": len(classes),
+        "names": classes
+    }
+    
+    with open(yaml_path, 'w', encoding='utf-8') as f:
+        yaml.dump(yaml_data, f, allow_unicode=True, sort_keys=False)
+        
+    print(f"✅ 설정 파일 생성 완료: {yaml_path}")
+    
+    # YOLOv8 Nano 모델 로드 (임베디드/엣지 디바이스 최적화)
+    model = YOLO("yolov8n.pt") 
+    print("\n🚀 3D 다각도 및 조명 변화 대응 증강(Augmentation) 학습을 시작합니다...")
+
+    # 본격적인 학습 진행
+    results = model.train(
+        data=yaml_path,
+        epochs=150,
+        imgsz=640,              
+        batch=16, # GPU 메모리에 따라 8 또는 4로 조절
+        project="Drone_QC_Project",
+        name="robust_3d_model",
+        
+        # ─── 3D 물리 환경 및 공장 조명 시뮬레이션 파라미터 ───
+        degrees=45.0,       # 부품 무작위 회전
+        translate=0.2,      # 위치 이동
+        scale=0.5,          # 원근/크기 변화
+        shear=15.0,         # 찌그러짐 왜곡
+        perspective=0.001,  # 3D 투시(원근법)
+        flipud=0.5,         # 상하 반전
+        fliplr=0.5,         # 좌우 반전
+        mosaic=1.0,         # 가림 현상 방지용 모자이크
+        hsv_h=0.015,        # 조명 색온도 변화
+        hsv_s=0.7,          # 그림자/반사 변화
+        hsv_v=0.4           # 밝기 변화
+    )
+    
+    print("\n✅ 학습 완료! 최고 성능 모델이 'Drone_QC_Project/robust_3d_model/weights/best.pt'에 저장되었습니다.")
+
+if __name__ == "__main__":
+    setup_dataset_and_train()

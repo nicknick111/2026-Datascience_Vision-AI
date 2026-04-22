@@ -1,0 +1,52 @@
+import uvicorn
+from fastapi import FastAPI
+import datetime
+import requests
+from requests.exceptions import RequestException
+
+app = FastAPI(title="AI Vision Inspection Server")
+
+API_SERVER = "http://192.168.3.21:8000"
+
+@app.post("/trigger")
+def trigger_vision():
+    """API 서버에서 촬영 신호 받으면 카메라 작동 및 결과(PLC 신호) 전송"""
+    print("\n======================================================")
+    print("📸 [AI] 촬영 신호 수신! 카메라 작동 중...")
+    
+    # 1. 임시 판정 결과 (정상일 경우 1, 불량일 경우 0으로 세팅)
+    # 실제 YOLOv8 판정 로직이 들어가면 이 부분이 동적으로 바뀝니다.
+    result_status = "정상"
+    plc_signal = 1 if result_status == "정상" else 0
+    
+    print(f"🔍 [AI] 비전 검사 완료 -> 판정: [{result_status}], 전송할 신호: [{plc_signal}]")
+
+    # 2. API 서버로 전송할 데이터 세팅 (PLC 주소와 값 추가)
+    data = {
+    "product_id": f"DRONE-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}",
+    "result": result_status,
+    "timestamp": datetime.datetime.now().isoformat(),
+    "camera_id": "RPC-20F"
+    }
+    
+    # 3. 안전한 통신 시도 (try-except)
+    try:
+        response = requests.post(f"{API_SERVER}/inspection", json=data, timeout=5.0)
+        
+        if response.status_code in [200, 201]:
+           print(f"✅ [API] 전송 성공! D100에 {plc_signal} 기록 요청됨 (상태코드: {response.status_code})")
+        else:
+            print(f"⚠️ [API] 서버 연결은 되었으나 수신 거절 (상태코드: {response.status_code})")
+            
+    except RequestException as e:
+        print(f"❌ [API 에러] 서버와 접속할 수 없습니다: {e}")
+        print("======================================================")
+        return {"message": "판정 완료되었으나 중앙 서버 전송 실패", "result": result_status}
+
+    print("======================================================")
+    
+    return {"message": "판정 및 전송 완료", "result": result_status, "sent_signal": plc_signal}
+
+if __name__ == "__main__":
+    print("🚀 AI 비전 검사 수신 서버를 시작합니다...")
+    uvicorn.run("main_server:app", host="0.0.0.0", port=8001, reload=True)}

@@ -1,0 +1,57 @@
+from ultralytics import YOLO
+
+model = YOLO("yolo26n.pt")
+model.train(
+    data="my_data.yaml",
+    epochs=150,
+    imgsz=640,
+    # ─── 3D 다각도 대응 핵심 파라미터 ───
+    degrees=45,        # ±45도 무작위 회전 (전방향 물체는 90~180도도 가능)
+    flipud=0.5,        # 상하 뒤집기 50% 확률 (기본값 0.0 → 반드시 켜야 함)
+    fliplr=0.5,        # 좌우 뒤집기
+    perspective=0.001, # 원근 변환 (비스듬한 시점 시뮬레이션, 범위 0~0.001)
+    shear=10.0,        # 전단 변환 ±10도 (측면 왜곡 효과)
+    scale=0.5,         # 크기 스케일 ±50% (원근/거리 변화 대응)
+    translate=0.2,     # 위치 이동 (부분 가림 대응)
+    mosaic=1.0,        # 4개 이미지 합성 (복잡한 배경 일반화)
+    mixup=0.2,         # 이미지 혼합 (과적합 방지)
+)
+
+import albumentations as A
+from ultralytics import YOLO
+
+model = YOLO("yolo26n.pt")
+
+# 3D 다각도 특화 증강 파이프라인
+custom_transforms = [
+    # 비선형 원근 왜곡 (카메라 각도 변화 시뮬레이션)
+    A.ShiftScaleRotate(
+        shift_limit=0.1,
+        scale_limit=0.3,
+        rotate_limit=45,
+        border_mode=0, p=0.7
+    ),
+    # 모션 블러 (실시간 영상의 움직임)
+    A.MotionBlur(blur_limit=7, p=0.3),
+    # 조명 변화 (각도에 따른 그림자/반사)
+    A.RandomBrightnessContrast(
+        brightness_limit=0.3,
+        contrast_limit=0.3, p=0.5
+    ),
+    A.HueSaturationValue(
+        hue_shift_limit=20,
+        sat_shift_limit=30, p=0.4
+    ),
+    # 부분 가림 (다른 물체에 가려진 상황)
+    A.CoarseDropout(
+        max_holes=6, max_height=40,
+        max_width=40, p=0.2
+    ),
+]
+
+model.train(
+    data="my_data.yaml",
+    epochs=150,
+    augmentations=custom_transforms,
+)
+
