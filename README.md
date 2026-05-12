@@ -17,6 +17,27 @@
 
 ---
 
+## 📹 데모 영상 — 실시간 검사 결과
+
+> 컨베이어 위 드론 부품을 RPC-20F 카메라로 촬영한 실제 시스템 동작 영상입니다.
+
+**🔴 Defect — 결함 검출**
+
+https://github.com/user-attachments/assets/48c088f4-f1e7-4294-a0ca-508892b899fe
+
+**🟢 Normal_C4 — C4 커넥터 정상 판정**
+
+https://github.com/user-attachments/assets/3a552a37-8d93-45f5-bdd4-df1f34574c33
+
+**🟢 Normal_Comm — 통신 모듈 정상 판정**
+
+https://github.com/user-attachments/assets/3b89b0fa-ff46-4b97-997a-0ebcc5960f4c
+
+**🟢 Normal_Supply — 전원 공급 장치 정상 판정**
+
+https://github.com/user-attachments/assets/fd827db0-d2f2-4a8e-ac40-c4430beb28da
+
+
 ## 2. 아키텍처 진화 과정 비교 (V1 vs V2)
 
 프로젝트는 단순히 코드를 작성하는 것을 넘어, 문제 발견과 원인 분석을 거쳐 구조를 개선하는 반복 주기(Iteration)를 거쳤습니다. 아래는 초기 설계와 최종 시스템의 핵심 차이점입니다.
